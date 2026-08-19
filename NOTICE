@@ -1,0 +1,31 @@
+NOTICE:
+
+Pure Java(tm) implementation of BLAKE3 cryptographic hash function.
+
+Main features:
+- Extends MessageDigest class and includes Provider method.
+- SIMD and scalar compressor modes with automatic fallback.
+- SIMD vectorization of blocks, chunks and parallel chunks.
+- Multi-threading in SIMD and scalar compression of chunks.
+- Configurable: enable or disable SIMD and multi-threading.
+- SIMD lanes and number of threads scale with the hardware.
+
+This implementation was developed by Archon Research for internal use in
+EternityMUD, but sadly did not meet the performance requirements and was
+abandoned at least for now. We are releasing it as open source software.
+
+You are free to use this software in your products, but you must include
+a statement that you are using software developed by Archon Research for
+EternityMUD and a link to: https://www.eternitymud.com
+
+DISCLAIMER: this is free and open source software. The developer takes no
+responsibility for any personal, material or other damage the use of this
+software might cause.
+
+This software was developed and tested using Java 25.
+
+Only human blood, sweat, tears and TIME were wasted during the development.
+AI tools have not been used during the development of this software.
+
+Original API documentation is available here:
+https://www.eternitymud.com/doc/java/com/eternitymud/core/util/Blake3.html
