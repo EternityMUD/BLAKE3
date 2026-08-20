@@ -1,5 +1,3 @@
-NOTICE:
-
 Pure Java(tm) implementation of BLAKE3 cryptographic hash function.
 
 Main features:
