@@ -1278,8 +1278,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 	/**
 	 * Constructs a new hasher for the keyed hash function.
-	 * <p>
-	 * <b>Note:</b> the key must not be modified, because it is used directly by this instance
 	 *
 	 * @param key
 	 *            hash key
@@ -1291,8 +1289,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 	/**
 	 * Constructs a new hasher for the keyed hash function.
-	 * <p>
-	 * <b>Note:</b> the key must not be modified, because it is used directly by this instance
 	 *
 	 * @param key
 	 *            hash key
