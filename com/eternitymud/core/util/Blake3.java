@@ -1,35 +1,21 @@
 /*
- * NOTICE:
- * <p>
- * Pure Java(tm) implementation of BLAKE3 cryptographic hash function.
- * <p>
- * Main features:
- * - Extends MessageDigest class and includes Provider method.
- * - SIMD and scalar compressor modes with automatic fallback.
- * - SIMD vectorization of blocks, chunks and parallel chunks.
- * - Multi-threading in SIMD and scalar compression of chunks.
- * - Configurable: enable or disable SIMD and multi-threading.
- * - SIMD lanes and number of threads scale with the hardware.
- * <p>
- * This implementation was developed by Archon Research for internal use in
- * EternityMUD, but sadly did not meet the performance requirements and was
- * abandoned at least for now. We are releasing it as open source software.
- * <p>
- * You are free to use this software in your products, but you must include
- * a statement that you are using software developed by Archon Research for
- * EternityMUD and a link to: https://www.eternitymud.com
- * <p>
- * DISCLAIMER: this is free and open source software. The developer takes no
- * responsibility for any personal, material or other damage the use of this
- * software might cause.
- * <p>
- * This software was developed and tested using Java 25.
- * <p>
- * Only human blood, sweat, tears and TIME were wasted during the development.
- * AI tools have not been used during the development of this software.
- * <p>
- * Original API documentation is available here:
- * https://www.eternitymud.com/doc/java/com/eternitymud/core/util/Blake3.html
+ * @formatter:off
+ *
+ * Copyright 2026 Archon Research
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * @formatter:on
  */
 package com.eternitymud.core.util;
 import java.io.Closeable;
