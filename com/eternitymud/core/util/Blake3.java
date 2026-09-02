@@ -18,15 +18,9 @@
  * @formatter:on
  */
 package com.eternitymud.core.util;
-import java.io.Closeable;
-import java.io.IOException;
-import java.lang.ref.Reference;
-import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
+import java.nio.ByteOrder;
 import java.nio.charset.Charset;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.security.DigestException;
 import java.security.MessageDigest;
 import java.security.MessageDigestSpi;
@@ -34,24 +28,10 @@ import java.security.NoSuchAlgorithmException;
 import java.security.Provider;
 import java.security.Provider.Service;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import jdk.incubator.vector.IntVector;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorShuffle;
@@ -64,19 +44,12 @@ import jdk.incubator.vector.VectorSpecies;
  * <p>
  * <code>&nbsp;&nbsp;&nbsp;&nbsp;--enable-preview<br>&nbsp;&nbsp;&nbsp;&nbsp;--add-modules=jdk.incubator.vector</code>
  * <p>
- * This class implements two types of SIMD (Single Instruction Multiple Data) parallelism that are discussed in section
- * 5.3 of BLAKE3 <a href="https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf">whitepaper</a>. Individual
- * blocks and a small number of chunks are compressed in serial using fixed-width 128-bit vectors. Large number of
- * chunks are compressed in parallel using a variable number of vector lanes that is scaled based on hardware. Scalar
- * compressor is used {@link Blake3#simd() automatically} if the vectorization API is not available on the runtime.
- * <p>
- * Parallel threads are used when compressing multiple chunks. The compressor uses half of the available cores at
- * maximum while the number of concurrent threads scales with the hardware. Multi-threading is supported when using SIMD
- * or scalar compressor alike. A small number of chunks are compressed sequentially.
- * <p>
- * SIMD parallelism and multi-threading performance depends on the AVX/NEON etc. capabilities of the hardware. If the
- * runtime has 32 cores and AVX-512 instruction set then at most 16 threads are used to compress 16 chunks in parallel
- * by each concurrent thread for a total of 256 chunks.
+ * This class implements two levels of SIMD (Single Instruction Multiple Data) parallelism that are discussed in section
+ * 5.3 of BLAKE3 <a href="https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf">whitepaper</a>: full-width
+ * lane-parallel compression of chunk batches, and fixed-width 128-bit vectors for individual block compression outside
+ * those batches (remainders, parent nodes, root output). SIMD performance depends on the AVX/AVX-512/NEON etc.
+ * capabilities of the hardware. Scalar compressor is used {@link Blake3#simd() automatically} if the vectorization API
+ * is unavailable or SIMD is disabled.
  * <p>
  * Instances of this class are designed to be used like {@link MessageDigest} objects. Incremental updates to the
  * hash value are supported, but the hash state is {@link Blake3#reset() reset} when a {@link Blake3#digest(int) digest}
@@ -88,31 +61,26 @@ import jdk.incubator.vector.VectorSpecies;
  * <p>
  * <code>
  * &nbsp;&nbsp;&nbsp;&nbsp;Blake3 b1=new Blake3();<br>
- * &nbsp;&nbsp;&nbsp;&nbsp;b1.update("Hello there".getBytes(StandardCharsets.UTF_8));<br>
+ * &nbsp;&nbsp;&nbsp;&nbsp;b1.update("Hello there".getBytes());<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;Blake3 b2=b1.clone();<br>
- * &nbsp;&nbsp;&nbsp;&nbsp;b2.update(" world!".getBytes(StandardCharsets.UTF_8));<br>
+ * &nbsp;&nbsp;&nbsp;&nbsp;b2.update(" world!".getBytes());<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;System.out.println(Base64.getEncoder().encodeToString(b1.digest()));<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;-&gt; 9FQM6IvkXlqP1tGY/5Dax+s03Yx51t+4dnoXALEIrm8=<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;System.out.println(Base64.getEncoder().encodeToString(b2.digest()));<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;-&gt; 6XeH1EeHk0/YYn+x73TYgOHk9Y+ibl8Z0d56OOXH4mk=<br>
- * &nbsp;&nbsp;&nbsp;&nbsp;b1.update("Hello again!".getBytes(StandardCharsets.UTF_8));<br>
+ * &nbsp;&nbsp;&nbsp;&nbsp;b1.update("Hello again!".getBytes());<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;System.out.println(Base64.getEncoder().encodeToString(b1.digest()));<br>
  * &nbsp;&nbsp;&nbsp;&nbsp;-&gt; PyX4XKZIhebsMQd88DHHBUrMnl99D7HzdblCEFtcxAs=
  * </code>
  * <p>
- * It is highly recommended to reuse hasher instances as long as they are needed to minimize the potential overhead of
- * internal thread management, unless it is required not to do so. If multiple concurrent threads share a single hasher
- * instance then it <i>must</i> be synchronized externally.
- * <p>
- * There are two system properties that can be used to configure Blake3 instances:
+ * There is a system property that can be used to configure Blake3 instances:
  * <p>
  * <code>
  * &nbsp;&nbsp;&nbsp;&nbsp;com.eternitymud.core.util.Blake3.simd=true<br>
- * &nbsp;&nbsp;&nbsp;&nbsp;com.eternitymud.core.util.Blake3.threads=true
  * </code>
  * <p>
- * If those properties are set to <code>false</code> then SIMD vectorization or multi-threading is disabled. The
- * properties must be set before this class is loaded, usually when Java virtual machine is started.
+ * If that property is set to <code>false</code> then SIMD vectorization is disabled. The property must be set before
+ * this class is loaded, usually when Java virtual machine is started.
  * <p>
  * This implementation has been tested with the
  * <a href="https://github.com/BLAKE3-team/BLAKE3/blob/master/test_vectors/test_vectors.json">vectors</a> of the
@@ -120,7 +88,7 @@ import jdk.incubator.vector.VectorSpecies;
  * vectorization. Numerous files of different sizes have also been hashed and the output matched to
  * <a href="https://crates.io/crates/b3sum"><code>b3sum</code></a> utility.
  *
- * @version 1.0
+ * @version 2.0
  * @author Zan the Archon &lt;zan@fantasymail.de&gt;
  */
 public final class Blake3 extends MessageDigest implements Cloneable
@@ -131,12 +99,11 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 		private Blake3Provider()
 		{
-			super("Blake3Provider","1.0","Blake3Provider - Blake3 message digest provider");
+			super("Blake3Provider","2.0","Blake3Provider - Blake3 message digest provider");
 			final String type="MessageDigest";
 			final String name=Blake3.class.getCanonicalName();
 			putService(new Blake3Service(this,type,Blake3.ALGORITHM,name,null,null));
 			putService(new Blake3Service(this,type,Blake3.ALGORITHM_SCALAR,name,null,null));
-			putService(new Blake3Service(this,type,Blake3.ALGORITHM_SIMD,name,null,null));
 		}
 	}
 
@@ -238,18 +205,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 			{
 				if(length==Blake3.BLOCK_LEN)
 				{
-					/*
-					 * After rather extensive profiling it was found that the hasher spends most of its time here
-					 * compressing blocks, specifically doing mixer function G rounds. If hashing some input file
-					 * takes 3s then about 2s is spent here. It is difficult to find a way to optimize this. G is
-					 * already virtually as optimal as possible in the SIMD and scalar compressor methods. Thread
-					 * parallelism doesn't help, since this cannot be computed in parallel. Rust and C seem to be
-					 * far superior to Java performing the arithmetic operations of the mixer function. Arena and
-					 * MemorySegment objects were tested, but they resulted in horrible performance where 3s task
-					 * took 8-10s to compute with SIMD compressor. Unsafe is deprecated for removal and therefore
-					 * optimization ideas for this are few. TLDR: the bottleneck of Blake3 in Java is not SIMD or
-					 * thread parallelism but this compression of blocks. Java intrinsics are very likely needed.
-					 */
 					c.compress(state,Blake3.words(block,words),chainingValue,counter,length,startFlag(flags));
 					System.arraycopy(state,0,chainingValue,0,Blake3.CHAIN_LEN);
 					Arrays.fill(block,ChunkState.ZERO);
@@ -281,11 +236,7 @@ public final class Blake3 extends MessageDigest implements Cloneable
 			return function(update(state,chainingValue,counter,length,flags),words,chainingValue);
 		}
 
-		abstract Collection <int[]> compress(List <ChunkState> chunks, int start, int end);
-
 		abstract int[] function(int[] state, int[] words, int[] chainingValue);
-
-		abstract int parallelism();
 
 		abstract boolean simd();
 
@@ -384,8 +335,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 	private static final class Scalar extends Compressor
 	{
-		private static final int P=Math.max(1,Runtime.getRuntime().availableProcessors()/2);
-
 		private static void g(final int[] state, final int a, final int b, final int c, final int d, final int x, final int y)
 		{
 			state[a]+=state[b]+x;
@@ -422,18 +371,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		}
 
 		@Override
-		Collection <int[]> compress(final List <ChunkState> chunks, int start, final int end)
-		{
-			final Queue <int[]> q=new ArrayDeque <>(end-start);
-			do
-			{
-				q.add(chunks.get(start).output().chainingValue(this));
-			}
-			while(++start<end);
-			return q;
-		}
-
-		@Override
 		int[] function(final int[] state, final int[] words, final int[] chainingValue)
 		{
 			int i=0, j=i;
@@ -452,12 +389,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		}
 
 		@Override
-		int parallelism()
-		{
-			return Blake3.THREADS_ENABLED?Scalar.P:1;
-		}
-
-		@Override
 		boolean simd()
 		{
 			return false;
@@ -466,14 +397,10 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 	private static final class Simd extends Compressor
 	{
-		/** Vector species used to compress multiple chunks in parallel. */
-		private static final VectorSpecies <Integer> PREF=IntVector.SPECIES_PREFERRED;
-		/** Vector species used to compress blocks or individual chunks. */
 		private static final VectorSpecies <Integer> SPEC=IntVector.SPECIES_128;
 		private static final VectorShuffle <Integer> S1=VectorShuffle.fromArray(Simd.SPEC,new int[]{1,2,3,0},0);
 		private static final VectorShuffle <Integer> S2=VectorShuffle.fromArray(Simd.SPEC,new int[]{2,3,0,1},0);
 		private static final VectorShuffle <Integer> S3=VectorShuffle.fromArray(Simd.SPEC,new int[]{3,0,1,2},0);
-		private static final int P=Runtime.getRuntime().availableProcessors()/2<2?1:Simd.PREF.length();
 
 		private Simd()
 		{
@@ -484,229 +411,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		public Compressor clone()
 		{
 			return this;
-		}
-
-		@Override
-		Collection <int[]> compress(final List <ChunkState> chunks, final int start, final int end)
-		{
-			/*
-			 * Java vectors are value-based classes, and cannot be used as array elements or method parameters without
-			 * extreme performance penalties. All compressor rounds and the mixer function G are done directly in this
-			 * method because of that property.
-			 */
-			int i;
-			final int lanes=end-start;
-			final Queue <int[]> states;
-			final Queue <int[]> words;
-			final Queue <int[]> chainingValues;
-			{
-				i=start;
-				final List <int[]> s=new ArrayList <>(lanes);
-				final List <int[]> w=new ArrayList <>(lanes);
-				final List <int[]> c=new ArrayList <>(lanes);
-				do
-				{
-					final Output o=chunks.get(i).output();
-					s.add(update(o.state,o.chainingValue,o.counter,o.length,o.flags));
-					w.add(o.words);
-					c.add(o.chainingValue);
-				}
-				while(++i<end);
-				states=transpose(s,Blake3.WORDS_LEN,lanes);
-				words=transpose(w,Blake3.WORDS_LEN,lanes);
-				chainingValues=transpose(c,Blake3.CHAIN_LEN,lanes);
-			}
-			IntVector v0=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v1=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v2=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v3=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v4=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v5=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v6=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v7=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v8=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v9=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v10=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v11=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v12=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v13=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v14=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector v15=IntVector.fromArray(Simd.PREF,states.poll(),0);
-			IntVector a=null, b=a, c=a, d=a, x=a, y=a;
-			final int[][] m=matrix(words);
-			int j=i=0;
-			do
-			{
-				final int[] s=Compressor.SCHEDULE[i++];
-				do
-				{
-					switch(j)
-					{
-						case 0:
-							a=v0;
-							b=v4;
-							c=v8;
-							d=v12;
-							x=IntVector.fromArray(Simd.PREF,m[s[0]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[1]],0);
-							break;
-						case 1:
-							a=v1;
-							b=v5;
-							c=v9;
-							d=v13;
-							x=IntVector.fromArray(Simd.PREF,m[s[2]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[3]],0);
-							break;
-						case 2:
-							a=v2;
-							b=v6;
-							c=v10;
-							d=v14;
-							x=IntVector.fromArray(Simd.PREF,m[s[4]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[5]],0);
-							break;
-						case 3:
-							a=v3;
-							b=v7;
-							c=v11;
-							d=v15;
-							x=IntVector.fromArray(Simd.PREF,m[s[6]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[7]],0);
-							break;
-						case 4:
-							a=v0;
-							b=v5;
-							c=v10;
-							d=v15;
-							x=IntVector.fromArray(Simd.PREF,m[s[8]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[9]],0);
-							break;
-						case 5:
-							a=v1;
-							b=v6;
-							c=v11;
-							d=v12;
-							x=IntVector.fromArray(Simd.PREF,m[s[10]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[11]],0);
-							break;
-						case 6:
-							a=v2;
-							b=v7;
-							c=v8;
-							d=v13;
-							x=IntVector.fromArray(Simd.PREF,m[s[12]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[13]],0);
-							break;
-						case 7:
-							a=v3;
-							b=v4;
-							c=v9;
-							d=v14;
-							x=IntVector.fromArray(Simd.PREF,m[s[14]],0);
-							y=IntVector.fromArray(Simd.PREF,m[s[15]],0);
-							break;
-					}
-					a=a.lanewise(VectorOperators.ADD,b).lanewise(VectorOperators.ADD,x);
-					d=d.lanewise(VectorOperators.XOR,a).lanewise(VectorOperators.ROR,16);
-					c=c.lanewise(VectorOperators.ADD,d);
-					b=b.lanewise(VectorOperators.XOR,c).lanewise(VectorOperators.ROR,12);
-					a=a.lanewise(VectorOperators.ADD,b).lanewise(VectorOperators.ADD,y);
-					d=d.lanewise(VectorOperators.XOR,a).lanewise(VectorOperators.ROR,8);
-					c=c.lanewise(VectorOperators.ADD,d);
-					b=b.lanewise(VectorOperators.XOR,c).lanewise(VectorOperators.ROR,7);
-					switch(j)
-					{
-						case 0:
-							v0=a;
-							v4=b;
-							v8=c;
-							v12=d;
-							break;
-						case 1:
-							v1=a;
-							v5=b;
-							v9=c;
-							v13=d;
-							break;
-						case 2:
-							v2=a;
-							v6=b;
-							v10=c;
-							v14=d;
-							break;
-						case 3:
-							v3=a;
-							v7=b;
-							v11=c;
-							v15=d;
-							break;
-						case 4:
-							v0=a;
-							v5=b;
-							v10=c;
-							v15=d;
-							break;
-						case 5:
-							v1=a;
-							v6=b;
-							v11=c;
-							v12=d;
-							break;
-						case 6:
-							v2=a;
-							v7=b;
-							v8=c;
-							v13=d;
-							break;
-						case 7:
-							v3=a;
-							v4=b;
-							v9=c;
-							v14=d;
-							break;
-					}
-				}
-				while(++j<Blake3.CHAIN_LEN);
-				j=0;
-			}
-			while(i<Compressor.ROUNDS);
-			v0=v0.lanewise(VectorOperators.XOR,v8);
-			v8=v8.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v1=v1.lanewise(VectorOperators.XOR,v9);
-			v9=v9.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v2=v2.lanewise(VectorOperators.XOR,v10);
-			v10=v10.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v3=v3.lanewise(VectorOperators.XOR,v11);
-			v11=v11.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v4=v4.lanewise(VectorOperators.XOR,v12);
-			v12=v12.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v5=v5.lanewise(VectorOperators.XOR,v13);
-			v13=v13.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v6=v6.lanewise(VectorOperators.XOR,v14);
-			v14=v14.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			v7=v7.lanewise(VectorOperators.XOR,v15);
-			v15=v15.lanewise(VectorOperators.XOR,IntVector.fromArray(Simd.PREF,chainingValues.poll(),0));
-			final List <int[]> l=new ArrayList <>(Blake3.WORDS_LEN);
-			{
-				l.add(v0.toArray());
-				l.add(v1.toArray());
-				l.add(v2.toArray());
-				l.add(v3.toArray());
-				l.add(v4.toArray());
-				l.add(v5.toArray());
-				l.add(v6.toArray());
-				l.add(v7.toArray());
-				l.add(v8.toArray());
-				l.add(v9.toArray());
-				l.add(v10.toArray());
-				l.add(v11.toArray());
-				l.add(v12.toArray());
-				l.add(v13.toArray());
-				l.add(v14.toArray());
-				l.add(v15.toArray());
-			}
-			return transpose(l,lanes,Blake3.WORDS_LEN);
 		}
 
 		@Override
@@ -758,27 +462,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 			return state;
 		}
 
-		private int[][] matrix(final Queue <int[]> q)
-		{
-			final int[][] m=new int[q.size()][];
-			{
-				for(int i=0; i<m.length; i++)
-					m[i]=q.poll();
-			}
-			return m;
-		}
-
-		@Override
-		int parallelism()
-		{
-			/*
-			 * SIMD always tries to compress as many chunks at a time as possible in a single thread or parallel
-			 * threads. This method can return 1 to disable bundle compression of chunks and thread parallelism.
-			 * For example: return Blake3.THREADS_ENABLED?Simd.P:1;
-			 */
-			return Simd.P;
-		}
-
 		private void permute(final int[] m, final int[] x, final int[] y, final int[] s)
 		{
 			int i=0, j=i;
@@ -795,268 +478,255 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		{
 			return true;
 		}
+	}
 
-		private Queue <int[]> transpose(final List <int[]> l, final int vectors, final int lanes)
+	private static final class Wide
+	{
+		private static final VectorSpecies <Integer> S=IntVector.SPECIES_PREFERRED;
+		private static final int LANES=Wide.S.length();
+
+		private static Queue <int[]> hashBatch(final byte[] in, final int off, final long baseChunk, final int[] key, final int flags)
 		{
-			final Queue <int[]> q=new ArrayDeque <>(vectors);
+			/*
+			 * Java vectors are value-based classes, and cannot be used as array elements or method parameters without
+			 * extreme performance penalties. All compressor rounds and the mixer function G are done directly in this
+			 * method because of that property.
+			 */
+			int i, j, k;
+			final int[] lo=new int[Wide.LANES];
+			final int[] hi=new int[Wide.LANES];
 			{
-				int i=0, j=i;
-				final int[] a=new int[lanes];
+				long l=baseChunk;
+				for(i=0; i<Wide.LANES; i++, l++)
+				{
+					lo[i]=(int)l;
+					hi[i]=(int)(l>>>32);
+				}
+			}
+			final int[] ints=new int[Wide.LANES*(Blake3.CHUNK_LEN/Integer.BYTES)];
+			{
+				ByteBuffer.wrap(in,off,Wide.LANES*Blake3.CHUNK_LEN).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(ints);
+			}
+			final int[][] m=new int[Blake3.WORDS_LEN][Wide.LANES];
+			IntVector v0=IntVector.broadcast(Wide.S,key[0]);
+			IntVector v1=IntVector.broadcast(Wide.S,key[1]);
+			IntVector v2=IntVector.broadcast(Wide.S,key[2]);
+			IntVector v3=IntVector.broadcast(Wide.S,key[3]);
+			IntVector v4=IntVector.broadcast(Wide.S,key[4]);
+			IntVector v5=IntVector.broadcast(Wide.S,key[5]);
+			IntVector v6=IntVector.broadcast(Wide.S,key[6]);
+			IntVector v7=IntVector.broadcast(Wide.S,key[7]);
+			IntVector a, b, c, d;
+			i=0;
+			do
+			{
+				IntVector v8=IntVector.broadcast(Wide.S,Blake3.IV[0]);
+				IntVector v9=IntVector.broadcast(Wide.S,Blake3.IV[1]);
+				IntVector v10=IntVector.broadcast(Wide.S,Blake3.IV[2]);
+				IntVector v11=IntVector.broadcast(Wide.S,Blake3.IV[3]);
+				IntVector v12=IntVector.fromArray(Wide.S,lo,0);
+				IntVector v13=IntVector.fromArray(Wide.S,hi,0);
+				IntVector v14=IntVector.broadcast(Wide.S,Blake3.BLOCK_LEN);
+				IntVector v15=IntVector.broadcast(Wide.S,flags|(i==0?Blake3.CHUNK_START:0)|(i==15?Blake3.CHUNK_END:0));
+				{
+					final int z=i*Blake3.WORDS_LEN;
+					for(j=0; j<Blake3.WORDS_LEN; j++)
+					{
+						for(k=0; k<Wide.LANES; k++)
+							m[j][k]=ints[z+k*(Blake3.CHUNK_LEN/Integer.BYTES)+j];
+					}
+				}
+				j=0;
 				do
 				{
-					a[i]=l.get(i++)[j];
-					if(i==lanes)
-					{
-						if(++j==vectors)
-						{
-							q.add(a);
-							break;
-						}
-						else
-							q.add(a.clone());
-						i=0;
-					}
+					final int[] s=Compressor.SCHEDULE[j];
+					final IntVector m0=IntVector.fromArray(Wide.S,m[s[0]],0);
+					final IntVector m1=IntVector.fromArray(Wide.S,m[s[1]],0);
+					final IntVector m2=IntVector.fromArray(Wide.S,m[s[2]],0);
+					final IntVector m3=IntVector.fromArray(Wide.S,m[s[3]],0);
+					final IntVector m4=IntVector.fromArray(Wide.S,m[s[4]],0);
+					final IntVector m5=IntVector.fromArray(Wide.S,m[s[5]],0);
+					final IntVector m6=IntVector.fromArray(Wide.S,m[s[6]],0);
+					final IntVector m7=IntVector.fromArray(Wide.S,m[s[7]],0);
+					final IntVector m8=IntVector.fromArray(Wide.S,m[s[8]],0);
+					final IntVector m9=IntVector.fromArray(Wide.S,m[s[9]],0);
+					final IntVector m10=IntVector.fromArray(Wide.S,m[s[10]],0);
+					final IntVector m11=IntVector.fromArray(Wide.S,m[s[11]],0);
+					final IntVector m12=IntVector.fromArray(Wide.S,m[s[12]],0);
+					final IntVector m13=IntVector.fromArray(Wide.S,m[s[13]],0);
+					final IntVector m14=IntVector.fromArray(Wide.S,m[s[14]],0);
+					final IntVector m15=IntVector.fromArray(Wide.S,m[s[15]],0);
+					// Column G1: G(v0,v4,v8,v12,m0,m1)
+					a=v0.add(v4).add(m0);
+					d=v12.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v8.add(d);
+					b=v4.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m1);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v0=a;
+					v4=b;
+					v8=c;
+					v12=d;
+					// Column G2: G(v1,v5,v9,v13,m2,m3)
+					a=v1.add(v5).add(m2);
+					d=v13.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v9.add(d);
+					b=v5.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m3);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v1=a;
+					v5=b;
+					v9=c;
+					v13=d;
+					// Column G3: G(v2,v6,v10,v14,m4,m5)
+					a=v2.add(v6).add(m4);
+					d=v14.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v10.add(d);
+					b=v6.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m5);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v2=a;
+					v6=b;
+					v10=c;
+					v14=d;
+					// Column G4: G(v3,v7,v11,v15,m6,m7)
+					a=v3.add(v7).add(m6);
+					d=v15.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v11.add(d);
+					b=v7.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m7);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v3=a;
+					v7=b;
+					v11=c;
+					v15=d;
+					// Diagonal G5: G(v0,v5,v10,v15,m8,m9)
+					a=v0.add(v5).add(m8);
+					d=v15.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v10.add(d);
+					b=v5.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m9);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v0=a;
+					v5=b;
+					v10=c;
+					v15=d;
+					// Diagonal G6: G(v1,v6,v11,v12,m10,m11)
+					a=v1.add(v6).add(m10);
+					d=v12.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v11.add(d);
+					b=v6.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m11);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v1=a;
+					v6=b;
+					v11=c;
+					v12=d;
+					// Diagonal G7: G(v2,v7,v8,v13,m12,m13)
+					a=v2.add(v7).add(m12);
+					d=v13.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v8.add(d);
+					b=v7.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m13);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v2=a;
+					v7=b;
+					v8=c;
+					v13=d;
+					// Diagonal G8: G(v3,v4,v9,v14,m14,m15)
+					a=v3.add(v4).add(m14);
+					d=v14.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,16).or(d.lanewise(VectorOperators.LSHL,16));
+					c=v9.add(d);
+					b=v4.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,12).or(b.lanewise(VectorOperators.LSHL,20));
+					a=a.add(b).add(m15);
+					d=d.lanewise(VectorOperators.XOR,a);
+					d=d.lanewise(VectorOperators.LSHR,8).or(d.lanewise(VectorOperators.LSHL,24));
+					c=c.add(d);
+					b=b.lanewise(VectorOperators.XOR,c);
+					b=b.lanewise(VectorOperators.LSHR,7).or(b.lanewise(VectorOperators.LSHL,25));
+					v3=a;
+					v4=b;
+					v9=c;
+					v14=d;
 				}
-				while(true);
+				while(++j<Compressor.ROUNDS);
+				v0=v0.lanewise(VectorOperators.XOR,v8);
+				v1=v1.lanewise(VectorOperators.XOR,v9);
+				v2=v2.lanewise(VectorOperators.XOR,v10);
+				v3=v3.lanewise(VectorOperators.XOR,v11);
+				v4=v4.lanewise(VectorOperators.XOR,v12);
+				v5=v5.lanewise(VectorOperators.XOR,v13);
+				v6=v6.lanewise(VectorOperators.XOR,v14);
+				v7=v7.lanewise(VectorOperators.XOR,v15);
+			}
+			while(++i<Blake3.CHUNK_LEN/Blake3.BLOCK_LEN);
+			final int[][] rows=new int[Blake3.CHAIN_LEN][];
+			rows[0]=v0.toArray();
+			rows[1]=v1.toArray();
+			rows[2]=v2.toArray();
+			rows[3]=v3.toArray();
+			rows[4]=v4.toArray();
+			rows[5]=v5.toArray();
+			rows[6]=v6.toArray();
+			rows[7]=v7.toArray();
+			return Wide.values(rows);
+		}
+
+		private static Queue <int[]> values(final int[][] rows)
+		{
+			final Queue <int[]> q=new ArrayDeque <>(Wide.LANES);
+			for(int i=0; i<Wide.LANES; i++)
+			{
+				final int[] a=new int[Blake3.WORDS_LEN];
+				for(int j=0; j<Blake3.CHAIN_LEN; j++)
+					a[j]=rows[j][i];
+				q.add(a);
 			}
 			return q;
-		}
-	}
-
-	private static final class SimdScalar extends Compressor
-	{
-		private SimdScalar()
-		{
-			super();
-		}
-
-		@Override
-		public Compressor clone()
-		{
-			return this;
-		}
-
-		@Override
-		Collection <int[]> compress(final List <ChunkState> chunks, final int start, final int end)
-		{
-			return Blake3.SIMD.compress(chunks,start,end);
-		}
-
-		@Override
-		int[] function(final int[] state, final int[] words, final int[] chainingValue)
-		{
-			/*
-			 * Uncomment this to compress blocks with scalar compressor and chunks with SIMD. Currently it's always
-			 * faster to compress blocks and chunks in sequence with SIMD, so this is disabled. If intrinsics bring
-			 * a speed up to scalar compression someday in the future, then this could be useful to enable.
-			 * if((state[15]&Blake3.CHUNK_END)!=Blake3.CHUNK_END)
-			 * return Blake3.SCALAR.function(state,words,chainingValue);
-			 */
-			return Blake3.SIMD.function(state,words,chainingValue);
-		}
-
-		@Override
-		int parallelism()
-		{
-			/*
-			 * It is faster not to use parallel threads at all, but we respect the configuration of the implementation
-			 * and use parallel threads if they are enabled.
-			 */
-			return Blake3.THREADS_ENABLED?Blake3.SIMD.simd()?Simd.P:Scalar.P:1;
-		}
-
-		@Override
-		boolean simd()
-		{
-			return Blake3.SIMD.simd();
-		}
-	}
-
-	private static final class ThreadPool implements Runnable, Closeable, AutoCloseable
-	{
-		private static final int THREADS=Math.max(1,Runtime.getRuntime().availableProcessors()/2-1);
-		private static final ThreadFactory MANAGER=Thread.ofVirtual().name("Blake3-manager").factory();
-		private static final ThreadFactory WORKERS=Thread.ofVirtual().name("Blake3-worker-",1).factory();
-		private final Set <Reference <Object>> h;
-		private final Object lock;
-		private ExecutorService m;
-		private ExecutorService e;
-		private boolean refresh;
-
-		private ThreadPool()
-		{
-			super();
-			h=new HashSet <>();
-			lock=new Object();
-			m=e=null;
-			refresh=false;
-		}
-
-		@Override
-		public void close()
-		{
-			synchronized(lock)
-			{
-				if(h.isEmpty())
-				{
-					if(refresh)
-						return;
-					if(e!=null)
-					{
-						e.close();
-						e=null;
-					}
-					if(m!=null)
-					{
-						m.close();
-						m=null;
-					}
-				}
-			}
-		}
-
-		private ExecutorService get(final Object ref, final int threads)
-		{
-			synchronized(lock)
-			{
-				refresh=h.add(new WeakReference <>(ref));
-				if(e!=null)
-					return e;
-				if(m==null)
-				{
-					final long delay=10;
-					final ScheduledThreadPoolExecutor init=new ScheduledThreadPoolExecutor(1,ThreadPool.MANAGER);
-					init.scheduleAtFixedRate(() ->
-					{
-						maintain();
-					},delay,delay,TimeUnit.SECONDS);
-					m=init;
-				}
-				return e=newPool(threads);
-			}
-		}
-
-		private void maintain()
-		{
-			synchronized(lock)
-			{
-				if(!h.isEmpty())
-				{
-					for(final Iterator <Reference <Object>> i=h.iterator(); i.hasNext();)
-					{
-						if(i.next().get()==null)
-							i.remove();
-					}
-				}
-				if(refresh)
-					refresh=false;
-				else
-					if(h.isEmpty())
-						ThreadPool.MANAGER.newThread(this).start();
-			}
-		}
-
-		private ExecutorService newPool(final int threads)
-		{
-			final ThreadPoolExecutor t;
-			{
-				final long timeout=10;
-				final int n=Math.min(threads,ThreadPool.THREADS);
-				if(n<1)
-					t=new ThreadPoolExecutor(0,Integer.MAX_VALUE,timeout,TimeUnit.SECONDS,new SynchronousQueue <Runnable>(true),ThreadPool.WORKERS);
-				else
-				{
-					t=new ThreadPoolExecutor(n,n,timeout,TimeUnit.SECONDS,new LinkedBlockingQueue <Runnable>(),ThreadPool.WORKERS);
-					t.allowCoreThreadTimeOut(true);
-					t.prestartAllCoreThreads();
-				}
-			}
-			return t;
-		}
-
-		private boolean remove(final Object ref)
-		{
-			synchronized(lock)
-			{
-				if(!h.isEmpty())
-				{
-					for(final Iterator <Reference <Object>> i=h.iterator(); i.hasNext();)
-					{
-						final Object o=i.next().get();
-						if(o==ref)
-						{
-							i.remove();
-							return refresh=true;
-						}
-						if(o==null)
-							i.remove();
-					}
-				}
-			}
-			return false;
-		}
-
-		@Override
-		public void run()
-		{
-			close();
-		}
-	}
-
-	/**
-	 * A simple timer that can be used in fast and dirty profiling. This is not thread-safe and is only usable during a
-	 * single thread execution.
-	 * <p>
-	 * Example:
-	 * <p>
-	 * <code>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;// first make a static timer:<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;private static final Timer TIMER=new Timer();<br><br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;// then in ChunkState::update method:<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;{<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Blake3.TIMER.start();<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;c.compress(...);<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Blake3.TIMER.add();<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;}<br><br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;// ...later in Blake3::digest method:<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;System.out.println(getAlgorithm()+": "+Blake3.TIMER.toString());
-	 * </code>
-	 * <p>
-	 * This example would print a string with the total execution time of the compressor method in millisecond
-	 * precision.
-	 */
-	static final class Timer
-	{
-		private static final String F="%dms";
-		private long t, t0;
-
-		Timer()
-		{
-			super();
-			t=t0=0;
-		}
-
-		void add()
-		{
-			t+=System.nanoTime()-t0;
-		}
-
-		void start()
-		{
-			t0=System.nanoTime();
-		}
-
-		long stop()
-		{
-			final long l=t/1000000;
-			t=t0=0;
-			return l;
-		}
-
-		@Override
-		public String toString()
-		{
-			return String.format(Timer.F,stop());
 		}
 	}
 
@@ -1075,37 +745,18 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	private static final int DERIVE_KEY_MATERIAL=64;
 	private static final int[] IV={0x6A09E667,0xBB67AE85,0x3C6EF372,0xA54FF53A,0x510E527F,0x9B05688C,0x1F83D9AB,0x5BE0CD19};
 	private static final byte[] EMPTY=new byte[0];
-	private static final boolean THREADS_ENABLED=Blake3.checkParallelism();
 	private static final boolean SIMD_ENABLED=Blake3.checkSIMD();
 	private static final Compressor SCALAR=Blake3.compressor(false);
 	private static final Compressor SIMD=Blake3.compressor(true);
-	private static final Compressor OPTIMAL=new SimdScalar();
-	private static final ThreadPool POOL=new ThreadPool();
 	/**
-	 * This constant sets the threshold when parallel compression is used. This value times chunk size is the size in
-	 * bytes of data that will be compressed by parallel threads. Currently it is 256*1024 = 262144 bytes. This value
-	 * <i>must</i> be a power of two in the range [2,2<sup>n</sup>] where <code>n</code> is an integer > 1.
-	 */
-	private static final int TASKS=256;
-	private static final int TASKS_1=Blake3.TASKS-1;
-	/**
-	 * This algorithm is allowed to choose SIMD or scalar compressor when it is beneficial. It could compress blocks
-	 * with a scalar compressor and chunks with SIMD etc.
+	 * This algorithm uses the wide chunk pipeline with SIMD block compression if available and a scalar compressor if
+	 * not.
 	 */
 	private static final String ALGORITHM="BLAKE3";
 	/**
 	 * This algorithm must always use a scalar compressor.
 	 */
 	private static final String ALGORITHM_SCALAR="BLAKE3-SCALAR";
-	/**
-	 * This algorithm must always use SIMD if available and a scalar compressor if not.
-	 */
-	private static final String ALGORITHM_SIMD="BLAKE3-SIMD";
-
-	private static boolean checkParallelism()
-	{
-		return !System.getProperty(Blake3.class.getCanonicalName()+".threads","true").equalsIgnoreCase("false");
-	}
 
 	private static boolean checkSIMD()
 	{
@@ -1145,9 +796,8 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	 * <p>
 	 * Supported algorithm names:<br>
 	 * <ul>
-	 * <li><code>BLAKE3</code> chooses between SIMD and scalar compression if needed
+	 * <li><code>BLAKE3</code> uses SIMD if available and scalar compression if not
 	 * <li><code>BLAKE3-SCALAR</code> uses scalar compression
-	 * <li><code>BLAKE3-SIMD</code> uses SIMD if possible and falls back to scalar compression if not
 	 * </ul>
 	 * <p>
 	 * Example:
@@ -1155,17 +805,14 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	 * <code>
 	 * &nbsp;&nbsp;&nbsp;&nbsp;Provider p=Blake3.provider();<br>
 	 * &nbsp;&nbsp;&nbsp;&nbsp;MessageDigest d1=MessageDigest.getInstance("BLAKE3",p);<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;d1.update("Hello there".getBytes(StandardCharsets.UTF_8));<br>
+	 * &nbsp;&nbsp;&nbsp;&nbsp;d1.update("Hello there".getBytes());<br>
 	 * &nbsp;&nbsp;&nbsp;&nbsp;MessageDigest d2=(MessageDigest)d1.clone();<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;d2.update(" world!".getBytes(StandardCharsets.UTF_8));<br>
+	 * &nbsp;&nbsp;&nbsp;&nbsp;d2.update(" world!".getBytes());<br>
 	 * &nbsp;&nbsp;&nbsp;&nbsp;byte[] hash1=d1.digest();<br>
 	 * &nbsp;&nbsp;&nbsp;&nbsp;byte[] hash2=d2.digest();<br>
-	 * &nbsp;&nbsp;&nbsp;&nbsp;d1.update("Hello again!".getBytes(StandardCharsets.UTF_8));<br>
+	 * &nbsp;&nbsp;&nbsp;&nbsp;d1.update("Hello again!".getBytes());<br>
 	 * &nbsp;&nbsp;&nbsp;&nbsp;byte[] hash3=d1.digest();
 	 * </code>
-	 * <p>
-	 * <b>Note:</b> {@link Blake3#digest(int) digest} method should <i>always</i> be called, preferably in a finally
-	 * block, when Blake3 instances are no longer needed to make sure internal thread pool is properly closed
 	 *
 	 * @return a new provider for Blake3 message digest instances
 	 */
@@ -1182,8 +829,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 				return Blake3.SIMD_ENABLED;
 			case ALGORITHM_SCALAR:
 				return false;
-			case ALGORITHM_SIMD:
-				return true;
 			default:
 				throw new NoSuchAlgorithmException("unknown algorithm: "+algorithm);
 		}
@@ -1210,9 +855,9 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	private final int[][] stack;
 	private int index;
 	private final int flags;
-	private final int lanes;
-	private final List <ChunkState> q;
-	private ExecutorService pool=null;
+	private final byte[] pending;
+	private int pendingLen;
+	private final boolean wide;
 
 	/**
 	 * Constructs a new hasher for the regular hash function.
@@ -1232,23 +877,15 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	{
 		super(b.getAlgorithm());
 		compr=b.compr.clone();
-		{
-			lanes=b.lanes;
-			if(lanes>1)
-			{
-				q=new ArrayList <>(Blake3.TASKS);
-				if(!b.q.isEmpty())
-					b.q.stream().forEach(e -> q.add(e.clone()));
-			}
-			else
-				q=null;
-		}
 		state=b.state.clone();
 		one=new byte[1];
 		key=b.key.clone();
 		stack=b.stack.clone();
 		index=b.index;
 		flags=b.flags;
+		pending=b.pending!=null?b.pending.clone():null;
+		pendingLen=b.pendingLen;
+		wide=b.wide;
 	}
 
 	/**
@@ -1366,75 +1003,40 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	private Blake3(final String algorithm, final int[] key, final int flags, final boolean simd)
 	{
 		super(algorithm);
-		compr=Blake3.ALGORITHM.equals(algorithm)?Blake3.OPTIMAL:simd?Blake3.SIMD:Blake3.SCALAR;
-		{
-			lanes=compr.parallelism();
-			q=lanes>1?new ArrayList <>(Blake3.TASKS):null;
-		}
+		compr=simd?Blake3.SIMD:Blake3.SCALAR;
 		state=new ChunkState(key,flags);
 		one=new byte[1];
 		this.key=key;
 		stack=new int[Blake3.STACK_LEN][];
 		index=0;
 		this.flags=flags;
+		wide=simd&&Blake3.SIMD_ENABLED&&Wide.LANES>1;
+		pending=wide?new byte[Wide.LANES*Blake3.CHUNK_LEN<<1]:null; // two batches: reserve + working
+		pendingLen=0;
 	}
 
-	private void addChunk(final ChunkState c)
+	private void addChunk()
 	{
-		if(lanes==1)
-		{
-			if(c==null)
-				return;
-			addChunkSerial(c,c.output().chainingValue(compr));
-		}
-		else
-			addChunkParallel(c);
-		if(c!=null)
-			state.reset(key);
-	}
-
-	private void addChunkParallel(final ChunkState c)
-	{
-		if((c!=null)&&(queue(c)))
-			state.counter++;
-		else
-			if(!q.isEmpty())
-			{
-				try
-				{
-					final Queue <int[]> r=compress();
-					final int len=q.size();
-					int i=0;
-					do
-					{
-						addChunkSerial(q.get(i),r.poll());
-					}
-					while(++i<len);
-				}
-				catch(final RuntimeException e)
-				{
-					throw e;
-				}
-				catch(final Exception e)
-				{
-					throw new RuntimeException(e);
-				}
-				finally
-				{
-					q.clear();
-				}
-			}
-	}
-
-	private void addChunkSerial(final ChunkState c, int[] chainingValue)
-	{
-		long counter=++c.counter;
+		int[] chainingValue=state.output().chainingValue(compr);
+		long counter=++state.counter;
 		while((counter&1)==0)
 		{
-			chainingValue=c.out.parentOutput(c.out.state,stack[--index],chainingValue,key,flags).chainingValue(compr);
+			chainingValue=state.out.parentOutput(state.out.state,stack[--index],chainingValue,key,flags).chainingValue(compr);
 			counter>>=1;
 		}
-		stack[index++]=c==state?chainingValue.clone():chainingValue;
+		stack[index++]=chainingValue.clone();
+		state.reset(key);
+	}
+
+	private void addChunkWide(int[] chainingValue, long counter)
+	{
+		counter++;
+		while((counter&1)==0)
+		{
+			chainingValue=state.out.parentOutput(state.state,stack[--index],chainingValue,key,flags).chainingValue(compr).clone();
+			counter>>=1;
+		}
+		stack[index++]=chainingValue;
 	}
 
 	/**
@@ -1448,68 +1050,6 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		return new Blake3(this);
 	}
 
-	private void close()
-	{
-		pool=null;
-		engineReset();
-		Blake3.POOL.remove(this);
-	}
-
-	private Queue <int[]> compress() throws Exception
-	{
-		int i=0;
-		final int len=q.size();
-		final Queue <int[]> r=new ArrayDeque <>(len);
-		if((!Blake3.THREADS_ENABLED)||(len<Blake3.TASKS))
-		{
-			if((compr.simd())&&(len>=lanes))
-			{
-				int j;
-				do
-				{
-					j=i+lanes;
-					r.addAll(compr.compress(q,i,j));
-					i=j;
-				}
-				while(i+lanes<len);
-			}
-			while(i<len)
-				r.add(q.get(i++).output().chainingValue(compr));
-			return r;
-		}
-		/*
-		 * Here we know that there are exactly Blake3.TASKS number of chunks and a total of 262144 bytes to compress in
-		 * parallel. The last chunks are compressed by this thread, so that's why we subtract lanes from len to get the
-		 * number of chunks we send to thread pool.
-		 */
-		final int n=len-lanes;
-		final Queue <Future <Collection <int[]>>> p=new ArrayDeque <>(n/lanes);
-		{
-			final ExecutorService e=pool!=null?pool:(pool=Blake3.POOL.get(this,n/lanes));
-			do
-			{
-				final int start=i;
-				i+=lanes;
-				final int end=i;
-				p.add(e.submit(new Callable <Collection <int[]>>()
-				{
-					@Override
-					public Collection <int[]> call()
-					{
-						return compr.compress(q,start,end);
-					}
-				}));
-			}
-			while(i<n);
-		}
-		final Collection <int[]> tail=compr.compress(q,i,len);
-		Future <Collection <int[]>> f;
-		while((f=p.poll())!=null)
-			r.addAll(f.get());
-		r.addAll(tail);
-		return r;
-	}
-
 	private byte[] context(final String context, final Charset charset)
 	{
 		final byte[] ctx=context.getBytes(charset);
@@ -1519,8 +1059,7 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 	/**
 	 * Completes the hash computation and writes any number of output bytes. The digest is reset after this call is
-	 * made. Final use of this instance should <i>always</i> be a digest method call to make sure internal thread pool
-	 * is properly closed. If digest is no longer needed in such a case then <code>digest(0)</code> is fast.
+	 * made.
 	 *
 	 * @param len
 	 *            hash length in bytes
@@ -1530,12 +1069,35 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	{
 		try
 		{
+			if((wide)&&(pendingLen>0))
+			{
+				updateDirect(pending,0,pendingLen);
+				pendingLen=0;
+			}
 			return len==0?Blake3.EMPTY:finalOutput().rootBytes(new byte[len],0,len,compr);
 		}
 		finally
 		{
-			close();
+			engineReset();
 		}
+	}
+
+	private void drain()
+	{
+		final int batch=Wide.LANES*Blake3.CHUNK_LEN;
+		if(pendingLen<batch<<1)
+			return;
+		int i;
+		do
+		{
+			final Queue <int[]> r=Wide.hashBatch(pending,0,state.counter,key,flags);
+			for(i=0; i<Wide.LANES; i++)
+				addChunkWide(r.poll(),state.counter+i);
+			state.counter+=Wide.LANES;
+			pendingLen-=batch;
+			System.arraycopy(pending,batch,pending,0,pendingLen);
+		}
+		while(pendingLen>=batch<<1);
 	}
 
 	@Override
@@ -1557,11 +1119,9 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	@Override
 	protected void engineReset()
 	{
-		index=0;
+		index=pendingLen=0;
 		Arrays.fill(stack,null);
 		state.clear(key);
-		if(q!=null)
-			q.clear();
 	}
 
 	@Override
@@ -1577,16 +1137,24 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		try
 		{
 			final int limit=Math.addExact(offset,len);
+			if(!wide)
+			{
+				updateDirect(input,offset,limit);
+				return;
+			}
+			int n;
 			while(offset<limit)
 			{
-				if(state.length()==Blake3.CHUNK_LEN)
-					addChunk(state);
-				state.update(input,offset,offset+=Math.min(Blake3.CHUNK_LEN-state.length(),limit-offset),compr);
+				n=Math.min(pending.length-pendingLen,limit-offset);
+				System.arraycopy(input,offset,pending,pendingLen,n);
+				pendingLen+=n;
+				offset+=n;
+				drain();
 			}
 		}
 		catch(final Throwable t)
 		{
-			close();
+			engineReset();
 			throw t;
 		}
 	}
@@ -1600,63 +1168,22 @@ public final class Blake3 extends MessageDigest implements Cloneable
 			if(input.hasArray())
 			{
 				final int p=input.position();
-				update(input.array(),p,len);
+				engineUpdate(input.array(),p,len);
 				input.position(p+len);
 				return;
 			}
 			final byte[] b=new byte[len];
 			input.get(b,0,len);
-			update(b,0,len);
+			engineUpdate(b,0,len);
 		}
 	}
 
 	private Output finalOutput()
 	{
-		// this makes sure there are no chunks in queue
-		addChunk(null);
 		final Output o=state.output();
 		while(index>0)
 			o.parentOutput(o.state,stack[--index],o.chainingValue(compr),key,flags);
 		return o;
-	}
-
-	byte[] hash(final String filename, final int len) throws IOException
-	{
-		/*
-		 * The purpose of this method was to test is reading optimal chunks of data beneficial for parallel computation.
-		 * This should not be a public method, because it can cause buffer overflows and invalid hash values if for some
-		 * reason it does not read exactly 8192 bytes of large files per loop.
-		 */
-		try(FileChannel c=FileChannel.open(Paths.get(filename),StandardOpenOption.READ))
-		{
-			/*
-			 * chunk*n must be equal to Blake3.TASKS*Blake3.CHUNK_LEN
-			 */
-			int i, j=0;
-			final int n=32;
-			final int chunk=8192;
-			final ByteBuffer b=ByteBuffer.allocateDirect(chunk);
-			final ByteBuffer l=ByteBuffer.allocateDirect(chunk*n);
-			while((i=c.read(b))>0)
-			{
-				l.put(b.flip());
-				if((i==chunk)&&(++j==n))
-				{
-					engineUpdate(l.flip());
-					l.clear();
-					j=0;
-				}
-				b.clear();
-			}
-			if(l.flip().hasRemaining())
-				engineUpdate(l);
-		}
-		return digest(len);
-	}
-
-	private boolean queue(final ChunkState c)
-	{
-		return q.size()<Blake3.TASKS_1?q.add(c.clone()):!q.add(c);
 	}
 
 	/**
@@ -1667,5 +1194,15 @@ public final class Blake3 extends MessageDigest implements Cloneable
 	public boolean simd()
 	{
 		return compr.simd();
+	}
+
+	private void updateDirect(final byte[] input, int offset, final int limit)
+	{
+		while(offset<limit)
+		{
+			if(state.length()==Blake3.CHUNK_LEN)
+				addChunk();
+			state.update(input,offset,offset+=Math.min(Blake3.CHUNK_LEN-state.length(),limit-offset),compr);
+		}
 	}
 }
