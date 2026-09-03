@@ -482,8 +482,8 @@ public final class Blake3 extends MessageDigest implements Cloneable
 
 	private static final class Wide
 	{
-		private static final VectorSpecies <Integer> S=IntVector.SPECIES_PREFERRED;
-		private static final int LANES=Wide.S.length();
+		private static final VectorSpecies <Integer> PREF=IntVector.SPECIES_PREFERRED;
+		private static final int LANES=Wide.PREF.length();
 
 		private static Queue <int[]> hashBatch(final byte[] in, final int off, final long baseChunk, final int[] key, final int flags)
 		{
@@ -508,26 +508,26 @@ public final class Blake3 extends MessageDigest implements Cloneable
 				ByteBuffer.wrap(in,off,Wide.LANES*Blake3.CHUNK_LEN).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(ints);
 			}
 			final int[][] m=new int[Blake3.WORDS_LEN][Wide.LANES];
-			IntVector v0=IntVector.broadcast(Wide.S,key[0]);
-			IntVector v1=IntVector.broadcast(Wide.S,key[1]);
-			IntVector v2=IntVector.broadcast(Wide.S,key[2]);
-			IntVector v3=IntVector.broadcast(Wide.S,key[3]);
-			IntVector v4=IntVector.broadcast(Wide.S,key[4]);
-			IntVector v5=IntVector.broadcast(Wide.S,key[5]);
-			IntVector v6=IntVector.broadcast(Wide.S,key[6]);
-			IntVector v7=IntVector.broadcast(Wide.S,key[7]);
+			IntVector v0=IntVector.broadcast(Wide.PREF,key[0]);
+			IntVector v1=IntVector.broadcast(Wide.PREF,key[1]);
+			IntVector v2=IntVector.broadcast(Wide.PREF,key[2]);
+			IntVector v3=IntVector.broadcast(Wide.PREF,key[3]);
+			IntVector v4=IntVector.broadcast(Wide.PREF,key[4]);
+			IntVector v5=IntVector.broadcast(Wide.PREF,key[5]);
+			IntVector v6=IntVector.broadcast(Wide.PREF,key[6]);
+			IntVector v7=IntVector.broadcast(Wide.PREF,key[7]);
 			IntVector a, b, c, d;
 			i=0;
 			do
 			{
-				IntVector v8=IntVector.broadcast(Wide.S,Blake3.IV[0]);
-				IntVector v9=IntVector.broadcast(Wide.S,Blake3.IV[1]);
-				IntVector v10=IntVector.broadcast(Wide.S,Blake3.IV[2]);
-				IntVector v11=IntVector.broadcast(Wide.S,Blake3.IV[3]);
-				IntVector v12=IntVector.fromArray(Wide.S,lo,0);
-				IntVector v13=IntVector.fromArray(Wide.S,hi,0);
-				IntVector v14=IntVector.broadcast(Wide.S,Blake3.BLOCK_LEN);
-				IntVector v15=IntVector.broadcast(Wide.S,flags|(i==0?Blake3.CHUNK_START:0)|(i==15?Blake3.CHUNK_END:0));
+				IntVector v8=IntVector.broadcast(Wide.PREF,Blake3.IV[0]);
+				IntVector v9=IntVector.broadcast(Wide.PREF,Blake3.IV[1]);
+				IntVector v10=IntVector.broadcast(Wide.PREF,Blake3.IV[2]);
+				IntVector v11=IntVector.broadcast(Wide.PREF,Blake3.IV[3]);
+				IntVector v12=IntVector.fromArray(Wide.PREF,lo,0);
+				IntVector v13=IntVector.fromArray(Wide.PREF,hi,0);
+				IntVector v14=IntVector.broadcast(Wide.PREF,Blake3.BLOCK_LEN);
+				IntVector v15=IntVector.broadcast(Wide.PREF,flags|(i==0?Blake3.CHUNK_START:0)|(i==15?Blake3.CHUNK_END:0));
 				{
 					final int z=i*Blake3.WORDS_LEN;
 					for(j=0; j<Blake3.WORDS_LEN; j++)
@@ -540,22 +540,22 @@ public final class Blake3 extends MessageDigest implements Cloneable
 				do
 				{
 					final int[] s=Compressor.SCHEDULE[j];
-					final IntVector m0=IntVector.fromArray(Wide.S,m[s[0]],0);
-					final IntVector m1=IntVector.fromArray(Wide.S,m[s[1]],0);
-					final IntVector m2=IntVector.fromArray(Wide.S,m[s[2]],0);
-					final IntVector m3=IntVector.fromArray(Wide.S,m[s[3]],0);
-					final IntVector m4=IntVector.fromArray(Wide.S,m[s[4]],0);
-					final IntVector m5=IntVector.fromArray(Wide.S,m[s[5]],0);
-					final IntVector m6=IntVector.fromArray(Wide.S,m[s[6]],0);
-					final IntVector m7=IntVector.fromArray(Wide.S,m[s[7]],0);
-					final IntVector m8=IntVector.fromArray(Wide.S,m[s[8]],0);
-					final IntVector m9=IntVector.fromArray(Wide.S,m[s[9]],0);
-					final IntVector m10=IntVector.fromArray(Wide.S,m[s[10]],0);
-					final IntVector m11=IntVector.fromArray(Wide.S,m[s[11]],0);
-					final IntVector m12=IntVector.fromArray(Wide.S,m[s[12]],0);
-					final IntVector m13=IntVector.fromArray(Wide.S,m[s[13]],0);
-					final IntVector m14=IntVector.fromArray(Wide.S,m[s[14]],0);
-					final IntVector m15=IntVector.fromArray(Wide.S,m[s[15]],0);
+					final IntVector m0=IntVector.fromArray(Wide.PREF,m[s[0]],0);
+					final IntVector m1=IntVector.fromArray(Wide.PREF,m[s[1]],0);
+					final IntVector m2=IntVector.fromArray(Wide.PREF,m[s[2]],0);
+					final IntVector m3=IntVector.fromArray(Wide.PREF,m[s[3]],0);
+					final IntVector m4=IntVector.fromArray(Wide.PREF,m[s[4]],0);
+					final IntVector m5=IntVector.fromArray(Wide.PREF,m[s[5]],0);
+					final IntVector m6=IntVector.fromArray(Wide.PREF,m[s[6]],0);
+					final IntVector m7=IntVector.fromArray(Wide.PREF,m[s[7]],0);
+					final IntVector m8=IntVector.fromArray(Wide.PREF,m[s[8]],0);
+					final IntVector m9=IntVector.fromArray(Wide.PREF,m[s[9]],0);
+					final IntVector m10=IntVector.fromArray(Wide.PREF,m[s[10]],0);
+					final IntVector m11=IntVector.fromArray(Wide.PREF,m[s[11]],0);
+					final IntVector m12=IntVector.fromArray(Wide.PREF,m[s[12]],0);
+					final IntVector m13=IntVector.fromArray(Wide.PREF,m[s[13]],0);
+					final IntVector m14=IntVector.fromArray(Wide.PREF,m[s[14]],0);
+					final IntVector m15=IntVector.fromArray(Wide.PREF,m[s[15]],0);
 					// Column G1: G(v0,v4,v8,v12,m0,m1)
 					a=v0.add(v4).add(m0);
 					d=v12.lanewise(VectorOperators.XOR,a);
