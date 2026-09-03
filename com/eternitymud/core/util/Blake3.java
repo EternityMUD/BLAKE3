@@ -1011,7 +1011,7 @@ public final class Blake3 extends MessageDigest implements Cloneable
 		index=0;
 		this.flags=flags;
 		wide=simd&&Blake3.SIMD_ENABLED&&Wide.LANES>1;
-		pending=wide?new byte[Wide.LANES*Blake3.CHUNK_LEN<<1]:null; // two batches: reserve + working
+		pending=wide?new byte[Wide.LANES*Blake3.CHUNK_LEN<<1]:null;
 		pendingLen=0;
 	}
 
