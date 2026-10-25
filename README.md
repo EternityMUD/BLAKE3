@@ -15,4 +15,4 @@ software might cause.
 
 This software was developed and tested using <a href="https://docs.oracle.com/en/java/javase/25/">Java 25</a>.
 
-Original API documentation is available <a href="https://www.eternitymud.com/doc/java/com/eternitymud/core/util/Blake3.html">here</a>.
+Original API documentation is available <a href="https://www.eternitymud.com/doc/java/com/eternitymud/core/blake3/Blake3.html">here</a>.
