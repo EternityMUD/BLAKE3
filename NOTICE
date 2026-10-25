@@ -14,4 +14,4 @@ software might cause.
 This software was developed and tested using Java 25.
 
 Original API documentation is available here:
-https://www.eternitymud.com/doc/java/com/eternitymud/core/util/Blake3.html
+https://www.eternitymud.com/doc/java/com/eternitymud/core/blake3/Blake3.html
